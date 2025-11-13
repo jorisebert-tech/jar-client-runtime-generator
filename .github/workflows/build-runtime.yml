@@ -1,0 +1,72 @@
+name: Build Custom Java Runtime
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'client.jar'
+      - 'runtime-config.json'
+
+jobs:
+  build-runtime:
+    name: Build Runtimes
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [windows-x64, windows-x86, linux-x64, linux-aarch64, macos-x64, macos-aarch64]
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Read runtime config
+        id: config
+        run: |
+          CONFIG=$(cat runtime-config.json)
+          echo "javaVersion=$(echo $CONFIG | jq -r .javaVersion)" >> $GITHUB_OUTPUT
+          echo "mainJar=$(echo $CONFIG | jq -r .mainJar)" >> $GITHUB_OUTPUT
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ steps.config.outputs.javaVersion }}
+
+      - name: Debug client.jar
+        run: |
+          echo "File info:"
+          ls -lh ./client.jar
+          file ./client.jar || true
+
+      - name: Detect required Java modules
+        id: detect-modules
+        run: |
+          MODULES=$(jdeps --multi-release 11 --print-module-deps --ignore-missing-deps ${{ steps.config.outputs.mainJar }})
+          echo "modules=$MODULES" >> $GITHUB_OUTPUT
+          echo "Detected modules: $MODULES"
+
+      - name: Create custom runtime
+        run: |    
+          rm -rf build/${{ matrix.os }}/runtime
+          mkdir -p build/${{ matrix.os }}
+          jlink \
+            --add-modules ${{ steps.detect-modules.outputs.modules }} \
+            --strip-debug \
+            --no-header-files \
+            --no-man-pages \
+            --compress=2 \
+            --output build/${{ matrix.os }}/runtime
+
+      - name: Package runtime
+        run: |
+          cd build/${{ matrix.os }}/runtime
+          zip -r ../../../runtime-${{ matrix.os }}.zip .
+
+      - name: Upload runtime artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-${{ matrix.os }}
+          path: runtime-${{ matrix.os }}.zip
