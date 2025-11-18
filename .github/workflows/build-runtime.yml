@@ -7,22 +7,42 @@ on:
     paths:
       - 'client.jar'
       - 'runtime-config.json'
+  workflow_dispatch:
 
 jobs:
   build-runtime:
     name: Build Runtimes
-    runs-on: ubuntu-latest
     strategy:
       matrix:
-        os: [windows-x64, windows-x86, linux-x64, linux-aarch64, macos-x64, macos-aarch64]
-    
+        target:
+          # Linux
+          - { runner: ubuntu-latest, name: linux-x64, arch: x64 }
+          - { runner: ubuntu-22.04-arm, name: linux-aarch64, arch: aarch64 }
+
+          # Windows
+          - { runner: windows-latest, name: windows-x64, arch: x64 }
+          - { runner: windows-latest, name: windows-x86, arch: x86 }
+
+          # macOS
+          - { runner: macos-15, name: macos-x64, arch: x64 }
+          - { runner: macos-latest, name: macos-aarch64, arch: aarch64 }
+
+    runs-on: ${{ matrix.target.runner }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           lfs: true
 
+      # Install jq on Windows
+      - name: Install jq on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install jq -y
+
       - name: Read runtime config
+        shell: bash
         id: config
         run: |
           CONFIG=$(cat runtime-config.json)
@@ -32,10 +52,12 @@ jobs:
       - name: Set up JDK
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
+          distribution: temurin
           java-version: ${{ steps.config.outputs.javaVersion }}
+          architecture: ${{ matrix.target.arch }}
 
       - name: Debug client.jar
+        shell: bash
         run: |
           echo "File info:"
           ls -lh ./client.jar
@@ -43,30 +65,41 @@ jobs:
 
       - name: Detect required Java modules
         id: detect-modules
+        shell: bash
         run: |
           MODULES=$(jdeps --multi-release 11 --print-module-deps --ignore-missing-deps ${{ steps.config.outputs.mainJar }})
           echo "modules=$MODULES" >> $GITHUB_OUTPUT
           echo "Detected modules: $MODULES"
 
       - name: Create custom runtime
-        run: |    
-          rm -rf build/${{ matrix.os }}/runtime
-          mkdir -p build/${{ matrix.os }}
+        shell: bash
+        run: |
+          rm -rf build/${{ matrix.target.name }}/runtime
+          mkdir -p build/${{ matrix.target.name }}
           jlink \
             --add-modules ${{ steps.detect-modules.outputs.modules }} \
             --strip-debug \
             --no-header-files \
             --no-man-pages \
             --compress=2 \
-            --output build/${{ matrix.os }}/runtime
+            --output build/${{ matrix.target.name }}/runtime
 
-      - name: Package runtime
+      - name: Package runtime (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
         run: |
-          cd build/${{ matrix.os }}/runtime
-          zip -r ../../../runtime-${{ matrix.os }}.zip .
+          Compress-Archive -Path "build\${{ matrix.target.name }}\runtime\*" -DestinationPath "runtime-${{ matrix.target.name }}.zip" -Force
+
+      - name: Package runtime (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          cd build/${{ matrix.target.name }}/runtime
+          zip -r ../../../runtime-${{ matrix.target.name }}.zip .
+
 
       - name: Upload runtime artifact
         uses: actions/upload-artifact@v4
         with:
-          name: runtime-${{ matrix.os }}
-          path: runtime-${{ matrix.os }}.zip
+          name: runtime-${{ matrix.target.name }}
+          path: runtime-${{ matrix.target.name }}.zip
