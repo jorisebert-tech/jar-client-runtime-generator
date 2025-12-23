@@ -76,13 +76,39 @@ jobs:
         run: |
           rm -rf build/${{ matrix.target.name }}/runtime
           mkdir -p build/${{ matrix.target.name }}
+
+          # Start with the modules detected by jdeps
+          MODULES="${{ steps.detect-modules.outputs.modules }}"
+
+          # Add platform-independent crypto modules for TLS support
+          CRYPTO_MODULES="jdk.crypto.ec,jdk.crypto.cryptoki,jdk.crypto.mscapi"
+
+          # On non-Windows, remove Windows-only module
+          if [[ "${{ runner.os }}" != "Windows" ]]; then
+            CRYPTO_MODULES=$(echo $CRYPTO_MODULES | sed 's/,jdk.crypto.mscapi//')
+          fi
+
+          # Combine detected modules with crypto modules
+          ALL_MODULES="${MODULES},${CRYPTO_MODULES}"
+
+          echo "Detected modules: $MODULES"
+          echo "Adding crypto modules: $CRYPTO_MODULES"
+
           jlink \
-            --add-modules ${{ steps.detect-modules.outputs.modules }} \
+            --add-modules "$ALL_MODULES" \
             --strip-debug \
             --no-header-files \
             --no-man-pages \
             --compress=2 \
             --output build/${{ matrix.target.name }}/runtime
+
+          echo "Custom runtime created at build/${{ matrix.target.name }}/runtime"
+
+      - name: Verify Windows certificate support
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          build\${{ matrix.target.name }}\runtime\bin\java.exe -XshowSettings:security -version
 
       - name: Package runtime (Windows)
         if: runner.os == 'Windows'
