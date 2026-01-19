@@ -67,32 +67,53 @@ jobs:
         id: detect-modules
         shell: bash
         run: |
-          MODULES=$(jdeps --multi-release 11 --print-module-deps --ignore-missing-deps ${{ steps.config.outputs.mainJar }})
-          echo "modules=$MODULES" >> $GITHUB_OUTPUT
-          echo "Detected modules: $MODULES"
+          # 1. Setup Variables and Extract
+          MAIN_JAR="${{ steps.config.outputs.mainJar }}"
+          MAIN_CLASS="client.class"
+          TEMP_DIR="temp_extracted"
+          mkdir -p "$TEMP_DIR"
+          unzip -q "$MAIN_JAR" -d "$TEMP_DIR"
+
+          # 2. Targeted jdeps analysis
+          echo "Analyzing dependencies for $MAIN_CLASS..."
+          RAW_OUTPUT=$(jdeps --print-module-deps \
+                             --ignore-missing-deps \
+                             --recursive \
+                             -cp "$TEMP_DIR" \
+                             "$TEMP_DIR/$MAIN_CLASS" 2>/dev/null || echo "")
+
+          # 3. Filter for valid Java/JDK module names only
+          DETECTED_MODS=$(echo "$RAW_OUTPUT" | tr ',' '\n' | grep -E '^(java\.|jdk\.|javax\.)' | tr '\n' ',' | sed 's/,$//')
+
+          # 4. Define Essential modules (Safety Net)
+          # These cover FlatLaf, Discord RPC, sun.misc.Unsafe, and Networking
+          ESSENTIALS="java.base,java.desktop,java.logging,java.naming,java.sql,java.management,java.prefs,java.instrument,java.scripting,jdk.unsupported,jdk.crypto.ec"
+
+          # Add Windows-only module if applicable
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            ESSENTIALS="$ESSENTIALS,jdk.crypto.mscapi"
+          fi
+
+          # 5. Combine and De-duplicate
+          # This ensures a clean, comma-separated list without repeats
+          FINAL_MODS=$(echo "$DETECTED_MODS,$ESSENTIALS" | tr ',' '\n' | sort -u | tr '\n' ',' | sed 's/,$//' | sed 's/^,//')
+
+          echo "modules=$FINAL_MODS" >> $GITHUB_OUTPUT
+          echo "Detected and Essential modules: $FINAL_MODS"
+          
+          # Cleanup temp folder
+          rm -rf "$TEMP_DIR"
 
       - name: Create custom runtime
         shell: bash
         run: |
+          # Retrieve the modules from the previous step output
+          ALL_MODULES="${{ steps.detect-modules.outputs.modules }}"
+          
+          echo "Building jlink runtime with: $ALL_MODULES"
+
           rm -rf build/${{ matrix.target.name }}/runtime
           mkdir -p build/${{ matrix.target.name }}
-
-          # Start with the modules detected by jdeps
-          MODULES="${{ steps.detect-modules.outputs.modules }}"
-
-          # Add platform-independent crypto modules for TLS support
-          CRYPTO_MODULES="jdk.crypto.ec,jdk.crypto.cryptoki,jdk.crypto.mscapi"
-
-          # On non-Windows, remove Windows-only module
-          if [[ "${{ runner.os }}" != "Windows" ]]; then
-            CRYPTO_MODULES=$(echo $CRYPTO_MODULES | sed 's/,jdk.crypto.mscapi//')
-          fi
-
-          # Combine detected modules with crypto modules
-          ALL_MODULES="${MODULES},${CRYPTO_MODULES}"
-
-          echo "Detected modules: $MODULES"
-          echo "Adding crypto modules: $CRYPTO_MODULES"
 
           jlink \
             --add-modules "$ALL_MODULES" \

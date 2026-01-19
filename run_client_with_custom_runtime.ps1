@@ -1,0 +1,1 @@
+./custom-runtime-test/bin/java.exe -jar client.jar
